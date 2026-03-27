@@ -1,5 +1,7 @@
 # 🚨 Security Vulnerability Demonstration App
 
+> **📢 DISCLAIMER:** This is **NOT an officially supported feature**. This application is provided **for demonstration purposes only** to showcase security scanning capabilities. Use at your own discretion.
+
 **⚠️ IMPORTANT SECURITY NOTICE:** This application intentionally uses older package versions with known vulnerabilities to demonstrate security scanning capabilities using the Qualys QScanner MCP server.
 
 ## 🎯 Purpose
