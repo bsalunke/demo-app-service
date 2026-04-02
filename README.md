@@ -144,9 +144,9 @@ Perform comprehensive SCA scan with CVE details and remediation.
 Show critical and high-severity vulnerabilities with fix versions.
 ```
 
-**AI/ML Security Focus:**
+**Policy evaluation:**
 ```
-Analyze AI/ML package vulnerabilities and provide risk assessment.
+Perform policy evaluation of oraclelinux:8.8 image with tag dev_test
 ```
 
 #### **Step 3: Analyze Results**
