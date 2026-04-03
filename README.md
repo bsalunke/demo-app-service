@@ -91,7 +91,7 @@ Add this configuration to your Agentic IDE's MCP settings:
 
 **For Claude Code CLI:**
 ```bash
-claude mcp add qscanner qscanner \
+claude mcp add qscanner /usr/local/quays/bin/qscanner \
   -e QUALYS_ACCESS_TOKEN="${QUALYS_ACCESS_TOKEN}" \
   -- mcp-server \
   --gateway-url "${QUALYS_GATEWAY_URL}" \
