@@ -1,0 +1,250 @@
+name: Build, Scan and Fix
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+env:
+  QSCANNER_URL: "https://github.com/bsalunke/dockplugin/releases/download/2.0/cli"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker-build:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          REF_SLUG="${GITHUB_REF_NAME//\//-}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${REF_SLUG}"
+          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          echo "image=${IMAGE_LOWER}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE_LOWER}" > image-name.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        run: |
+          IMAGE=$(cat image-name.txt)
+          docker build --pull -t "${IMAGE}" .
+          docker push "${IMAGE}"
+          if [ "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}" ]; then
+            LATEST=$(echo "${REGISTRY}/${IMAGE_NAME}:latest" | tr '[:upper:]' '[:lower:]')
+            docker tag "${IMAGE}" "${LATEST}"
+            docker push "${LATEST}"
+          fi
+
+      - name: Upload image-name artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-name
+          path: image-name.txt
+
+  scan-and-fix:
+    name: Scan and Auto-Patch
+    needs: docker-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Download image-name artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-name
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq python3 ca-certificates git nodejs npm
+          npm install -g @openai/codex --silent
+          codex --version
+
+      - name: Pull image
+        run: |
+          IMAGE=$(cat image-name.txt)
+          docker pull "${IMAGE}" || true
+
+      - name: Install QScanner
+        run: |
+          sudo curl -fsSL "${QSCANNER_URL}" -o /usr/local/bin/qscanner
+          sudo chmod +x /usr/local/bin/qscanner
+          qscanner --help 2>&1 | head -3 || true
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "codex-bot@ci.local"
+          git config --global user.name "Codex Security Bot"
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 30
+          git config --global http.postBuffer 524288000
+
+      - name: Write Codex MCP config
+        env:
+          QUALYS_ACCESS_TOKEN: ${{ secrets.QUALYS_ACCESS_TOKEN }}
+          GH_BOT_TOKEN: ${{ secrets.GH_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ~/.codex
+          cat > ~/.codex/config.toml <<EOF
+          [mcp_servers.qscanner-mcp]
+          command = "qscanner"
+          args = ["-q", "mcp-server", "--gateway-url", "https://gateway.qg4.apps.qualys.com"]
+          [mcp_servers.qscanner-mcp.env]
+          QUALYS_ACCESS_TOKEN = "${QUALYS_ACCESS_TOKEN}"
+
+          [mcp_servers.github-mcp]
+          type = "http"
+          url = "https://api.githubcopilot.com/mcp/"
+          [mcp_servers.github-mcp.headers]
+          Authorization = "Bearer ${GH_BOT_TOKEN}"
+          EOF
+          sed 's/Bearer .*/Bearer ***REDACTED***/' ~/.codex/config.toml
+
+      - name: Run Codex scan + patch + PR
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          POLICY_TAGS: ${{ vars.POLICY_TAGS }}
+          GH_TOKEN: ${{ secrets.GH_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE=$(cat image-name.txt)
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-8)
+          FIX_BRANCH="fix/auto-patch-${SHORT_SHA}"
+          RUN_ID="${GITHUB_RUN_ID}"
+          REPO_OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+
+          echo "Image       = ${IMAGE}"
+          echo "Fix branch  = ${FIX_BRANCH}"
+          echo "Repo        = ${REPO_OWNER}/${REPO_NAME}"
+
+          cat > /tmp/codex-prompt.txt <<'PROMPT'
+          You are a DevSecOps engineer. Follow these five steps in order.
+          Note: at the end of the process, fail the build based on QScanner policy evaluation results.
+
+          STEP 1 - SCAN
+          Use the qscanner-mcp MCP tool to evaluate security policy for this container image: IMAGE_PLACEHOLDER for policy tag TAG_PLACEHOLDER.
+          Perform scan only.
+          Wait for the complete vulnerability policy evaluation before continuing.
+          Save results to scan-results.json with this schema:
+            image, scan_timestamp,
+            summary with fields critical/high/medium/low,
+            vulnerabilities array where each item has:
+              qid, id, severity, package, installed_version, fixed_version, patchable, description, cvss_score
+          Write a markdown summary table to scan-summary.md.
+          Never fabricate CVE data — use only what qscanner-mcp returns.
+          Keep the policy evaluation results to mark the build failure later.
+          Write POLICY_RESULT=<allow|deny> to policy-result.env based on the policy evaluation.
+
+          STEP 2 - PATCH Packages in Code
+          Do not patch any vulnerability if the build is triggered on a branch already auto-patched.
+          Read the vulnerability report.
+          For every vulnerability where patchable is true and fixed_version is not null:
+            - Update the packages to fix the vulnerabilities in the package manager metadata files e.g. requirements.txt
+          Write a changelog to fix-changes.md listing each CVE id, severity, package, and what changed.
+          Make sure you fix all the packages properly without losing any data.
+
+          STEP 3 - COMMIT AND PUSH
+          Commit all the changes done as part of vulnerability fix:
+            Do not perform this step if there are no patches to be applied.
+            Use command: git checkout -b BRANCH_PLACEHOLDER
+            The git commit message could be: auto-patch CVEs pipeline PIPELINE_PLACEHOLDER
+            git push origin BRANCH_PLACEHOLDER
+
+          STEP 4 - CREATE PULL REQUEST
+          Do not perform this step if there are no patches to be applied.
+          Use the github-mcp MCP tool create_pull_request with these exact values:
+            owner: OWNER_PLACEHOLDER
+            repo: REPO_PLACEHOLDER
+            title: "fix: auto-patch vulnerabilities pipeline PIPELINE_PLACEHOLDER"
+            body: paste the contents of fix-changes.md including a before/after severity count table
+            head: BRANCH_PLACEHOLDER
+            base: main
+            labels: security, automated-fix
+          Print the PR web URL at the end.
+
+          STEP 5 - FAIL THE BUILD if policy evaluation is DENY
+          Based on the policy evaluation results fail the build. If it's deny, fail it. If it's allow, let it run.
+          PROMPT
+
+          sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g" /tmp/codex-prompt.txt
+          sed -i "s|BRANCH_PLACEHOLDER|${FIX_BRANCH}|g" /tmp/codex-prompt.txt
+          sed -i "s|PIPELINE_PLACEHOLDER|${RUN_ID}|g" /tmp/codex-prompt.txt
+          sed -i "s|OWNER_PLACEHOLDER|${REPO_OWNER}|g" /tmp/codex-prompt.txt
+          sed -i "s|REPO_PLACEHOLDER|${REPO_NAME}|g" /tmp/codex-prompt.txt
+          sed -i "s|TAG_PLACEHOLDER|${POLICY_TAGS}|g" /tmp/codex-prompt.txt
+
+          echo "=== Codex prompt ==="
+          cat /tmp/codex-prompt.txt
+
+          codex exec --yolo --json "$(cat /tmp/codex-prompt.txt)" 2>&1 | tee scan-raw.log
+
+      - name: Validate scan output
+        run: |
+          if [ ! -f scan-results.json ]; then
+            echo "ERROR: scan-results.json missing"
+            cat scan-raw.log || true
+            exit 1
+          fi
+          echo "=== Vulnerability Summary ==="
+          jq '.summary' scan-results.json
+
+      - name: Enforce policy gate
+        run: |
+          if [ -f policy-result.env ]; then
+            POLICY_RESULT=$(grep "POLICY_RESULT" policy-result.env | cut -d= -f2 | tr -d '[:space:]')
+            echo "Policy result read from file: ${POLICY_RESULT}"
+          else
+            echo "WARNING: policy-result.env not found — defaulting to deny"
+            POLICY_RESULT="deny"
+          fi
+          echo "Final POLICY_RESULT=${POLICY_RESULT}"
+          if [ "${POLICY_RESULT}" != "allow" ]; then
+            echo "PIPELINE BLOCKED: Policy evaluation denied"
+            exit 1
+          fi
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-fix-${{ github.sha }}
+          path: |
+            scan-results.json
+            scan-summary.md
+            fix-changes.md
+            scan-raw.log
+          retention-days: 7
