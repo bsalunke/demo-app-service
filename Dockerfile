@@ -11,9 +11,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        openssl \
+        libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade "pip==23.2.1" "setuptools==68.2.2" "wheel==0.41.2" \
+RUN pip install --upgrade "pip==26.0" "setuptools==78.1.1" "wheel==0.46.2" \
         "Cython<3.0"
 
 ARG REQ_FILE=requirements.txt
