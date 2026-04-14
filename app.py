@@ -764,6 +764,7 @@ def main():
     print("Starting Multi-Package Python Application...")
     print(f"Python version: {sys.version}")
     print(f"Platform: {sys.platform}")
+    print(f"update: {sys.platform}")
     
     # Print some package versions
     print(f"Flask version: {Flask.__version__}")
