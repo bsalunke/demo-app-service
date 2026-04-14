@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip setuptools wheel
+RUN pip install --upgrade "pip==23.2.1" "setuptools==68.2.2" "wheel==0.41.2"
 
 ARG REQ_FILE=requirements.txt
 COPY ${REQ_FILE} requirements.txt
