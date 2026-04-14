@@ -43,16 +43,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Compute cache/tag refs
+        id: cacheref
         run: |
+          CACHE_REF=$(echo "${REGISTRY}/${IMAGE_NAME}:buildcache" | tr '[:upper:]' '[:lower:]')
+          LATEST_REF=$(echo "${REGISTRY}/${IMAGE_NAME}:latest" | tr '[:upper:]' '[:lower:]')
           IMAGE=$(cat image-name.txt)
-          docker build --pull -t "${IMAGE}" .
-          docker push "${IMAGE}"
+          TAGS="${IMAGE}"
           if [ "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}" ]; then
-            LATEST=$(echo "${REGISTRY}/${IMAGE_NAME}:latest" | tr '[:upper:]' '[:lower:]')
-            docker tag "${IMAGE}" "${LATEST}"
-            docker push "${LATEST}"
+            TAGS="${IMAGE}
+          ${LATEST_REF}"
           fi
+          {
+            echo "cache_ref=${CACHE_REF}"
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (with GHCR layer cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          pull: true
+          tags: ${{ steps.cacheref.outputs.tags }}
+          cache-from: type=registry,ref=${{ steps.cacheref.outputs.cache_ref }}
+          cache-to: type=registry,ref=${{ steps.cacheref.outputs.cache_ref }},mode=max
 
       - name: Upload image-name artifact
         uses: actions/upload-artifact@v4
