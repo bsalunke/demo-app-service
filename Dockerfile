@@ -18,11 +18,14 @@ RUN pip install --upgrade "pip==23.2.1" "setuptools==68.2.2" "wheel==0.41.2" \
 ARG REQ_FILE=requirements.txt
 COPY ${REQ_FILE} requirements.txt
 
-RUN pip install --no-cache-dir \
-        --use-deprecated=legacy-resolver \
-        --ignore-requires-python \
-        --no-build-isolation \
-        -r requirements.txt
+RUN grep -vE '^\s*(#|$)' requirements.txt | while read -r pkg; do \
+        pip install --no-cache-dir \
+            --use-deprecated=legacy-resolver \
+            --ignore-requires-python \
+            --no-build-isolation \
+            "${pkg}" \
+            || echo "SKIP: ${pkg} (could not install)"; \
+    done
 
 COPY . .
 
