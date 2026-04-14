@@ -9,15 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set working directory
 WORKDIR /app
 
-# Upgrade pip to handle older packages better
-RUN pip install --upgrade pip==21.2.4 setuptools==57.4.0 wheel==0.36.2
+RUN pip install --upgrade pip setuptools wheel
 
-# Copy requirements first for better caching
 ARG REQ_FILE=requirements.txt
 COPY ${REQ_FILE} requirements.txt
 
-# Install Python packages with legacy resolver for compatibility
-RUN pip install --no-cache-dir --use-deprecated=legacy-resolver -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
