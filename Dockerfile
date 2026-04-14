@@ -20,6 +20,7 @@ COPY ${REQ_FILE} requirements.txt
 RUN pip install --no-cache-dir \
         --use-deprecated=legacy-resolver \
         --ignore-requires-python \
+        --no-build-isolation \
         -r requirements.txt
 
 COPY . .
