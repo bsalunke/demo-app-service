@@ -69,6 +69,19 @@ jobs:
       packages: read
       pull-requests: write
     steps:
+      - name: Register secrets as masked
+        env:
+          QUALYS_ACCESS_TOKEN: ${{ secrets.QUALYS_ACCESS_TOKEN }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          GH_BOT_TOKEN: ${{ secrets.GH_BOT_TOKEN }}
+        run: |
+          for v in QUALYS_ACCESS_TOKEN CODEX_API_KEY GH_BOT_TOKEN; do
+            val="${!v}"
+            if [ -n "${val}" ]; then
+              echo "::add-mask::${val}"
+            fi
+          done
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -118,7 +131,10 @@ jobs:
           QUALYS_ACCESS_TOKEN: ${{ secrets.QUALYS_ACCESS_TOKEN }}
           GH_BOT_TOKEN: ${{ secrets.GH_BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
+          set +x
           mkdir -p ~/.codex
+          chmod 700 ~/.codex
+          umask 077
           cat > ~/.codex/config.toml <<EOF
           [mcp_servers.qscanner-mcp]
           command = "qscanner"
@@ -132,7 +148,8 @@ jobs:
           [mcp_servers.github-mcp.headers]
           Authorization = "Bearer ${GH_BOT_TOKEN}"
           EOF
-          sed 's/Bearer .*/Bearer ***REDACTED***/' ~/.codex/config.toml
+          chmod 600 ~/.codex/config.toml
+          echo "Wrote ~/.codex/config.toml ($(wc -c < ~/.codex/config.toml) bytes)"
 
       - name: Run Codex scan + patch + PR
         env:
@@ -210,7 +227,16 @@ jobs:
           echo "=== Codex prompt ==="
           cat /tmp/codex-prompt.txt
 
-          codex exec --yolo --json "$(cat /tmp/codex-prompt.txt)" 2>&1 | tee scan-raw.log
+          set +x
+          codex exec --yolo --json "$(cat /tmp/codex-prompt.txt)" 2>&1 | tee scan-raw.log >/dev/null
+          # Sanitize any accidental token leakage before the log becomes an artifact
+          for v in QUALYS_ACCESS_TOKEN CODEX_API_KEY GH_TOKEN; do
+            val="${!v}"
+            if [ -n "${val}" ]; then
+              python3 -c "import sys,re; sys.stdout.write(re.sub(re.escape(sys.argv[1]), '***REDACTED***', open(sys.argv[2]).read()))" "${val}" scan-raw.log > scan-raw.log.tmp
+              mv scan-raw.log.tmp scan-raw.log
+            fi
+          done
 
       - name: Validate scan output
         run: |
